@@ -112,6 +112,7 @@ def test_registry_lists_three_backends():
 
 
 def test_gemini_without_key_fails_clearly(monkeypatch):
+    pytest.importorskip("google.genai")
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     with pytest.raises(BackendError, match="GEMINI_API_KEY"):

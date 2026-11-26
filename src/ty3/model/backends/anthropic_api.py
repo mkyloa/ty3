@@ -20,13 +20,18 @@ __all__ = ["AnthropicBackend"]
 _WEB_SEARCH = {"type": "web_search_20260209", "name": "web_search"}
 _WEB_FETCH = {"type": "web_fetch_20260209", "name": "web_fetch"}
 
+# Серверний цикл вебпошуку зупиняється після ~10 ітерацій зі stop_reason
+# "pause_turn": відповідь іще не готова, її треба продовжити тим самим запитом
+# плюс уже отриманим вмістом асистента. Ліміт — запобіжник від нескінченного циклу.
+_MAX_CONTINUATIONS = 5
+
 
 class AnthropicBackend:
     name = "anthropic"
 
     def __init__(
         self,
-        model: str = "claude-opus-5",
+        model: str = "claude-opus-5-5",
         api_key: str | None = None,
         cache_ttl: str = "1h",
         timeout_s: int = 900,
@@ -57,13 +62,13 @@ class AnthropicBackend:
         max_tokens: int = 32000,
         tools: Tools = Tools.NONE,
     ) -> Completion:
-        message = self._stream(
+        message, usage = self._stream(
             prompt,
             effort=effort,
             max_tokens=max_tokens,
             tools=[_WEB_SEARCH, _WEB_FETCH] if tools is Tools.SEARCH else None,
         )
-        return self._to_completion(message, data=None)
+        return self._to_completion(message, usage, data=None)
 
     def complete_structured(
         self,
@@ -73,7 +78,7 @@ class AnthropicBackend:
         effort: str = "high",
         max_tokens: int = 32000,
     ) -> Completion:
-        message = self._stream(
+        message, usage = self._stream(
             prompt,
             effort=effort,
             max_tokens=max_tokens,
@@ -86,7 +91,7 @@ class AnthropicBackend:
             raise BackendError(
                 f"{self.name}: вивід не пройшов схему {schema.__name__}: {exc}"
             ) from exc
-        return self._to_completion(message, data=validated.model_dump())
+        return self._to_completion(message, usage, data=validated.model_dump())
 
     def count_tokens(self, prompt: Prompt) -> int:
         try:
@@ -138,15 +143,24 @@ class AnthropicBackend:
         if tools:
             kwargs["tools"] = tools
 
-        try:
-            # Стрімимо завжди: при великому max_tokens нестрімовий запит
-            # впирається в HTTP-таймаут SDK.
-            with self._client.messages.stream(**kwargs) as stream:
-                message = stream.get_final_message()
-        except self._anthropic.APIStatusError as exc:
-            raise BackendError(f"{self.name}: HTTP {exc.status_code}: {exc.message}") from exc
-        except self._anthropic.APIConnectionError as exc:
-            raise BackendError(f"{self.name}: мережа: {exc}") from exc
+        usage = Usage()
+        for _ in range(_MAX_CONTINUATIONS + 1):
+            message = self._stream_once(kwargs)
+            usage = usage + self._usage_of(message)
+            if message.stop_reason != "pause_turn":
+                break
+            # Продовження: той самий user + усі паузи асистента як є, БЕЗ «Continue» —
+            # API бачить незавершений server_tool_use і відновлює цикл сам.
+            # Сусідні assistant-повідомлення API зливає в один хід.
+            kwargs["messages"] = [
+                *kwargs["messages"],
+                {"role": "assistant", "content": message.content},
+            ]
+        else:
+            raise BackendError(
+                f"{self.name}: вебпошук не завершився після "
+                f"{_MAX_CONTINUATIONS} продовжень (pause_turn)"
+            )
 
         # Перевіряємо відмову ДО читання content — при відмові він порожній
         if message.stop_reason == "refusal":
@@ -159,7 +173,28 @@ class AnthropicBackend:
             raise BackendError(
                 f"{self.name}: обірвано на max_tokens={max_tokens} — підніми ліміт"
             )
-        return message
+        return message, usage
+
+    def _stream_once(self, kwargs: dict[str, Any]) -> Any:
+        try:
+            # Стрімимо завжди: при великому max_tokens нестрімовий запит
+            # впирається в HTTP-таймаут SDK.
+            with self._client.messages.stream(**kwargs) as stream:
+                return stream.get_final_message()
+        except self._anthropic.APIStatusError as exc:
+            raise BackendError(f"{self.name}: HTTP {exc.status_code}: {exc.message}") from exc
+        except self._anthropic.APIConnectionError as exc:
+            raise BackendError(f"{self.name}: мережа: {exc}") from exc
+
+    @staticmethod
+    def _usage_of(message: Any) -> Usage:
+        usage = message.usage
+        return Usage(
+            input_tokens=int(usage.input_tokens or 0),
+            output_tokens=int(usage.output_tokens or 0),
+            cache_read_tokens=int(getattr(usage, "cache_read_input_tokens", 0) or 0),
+            cache_write_tokens=int(getattr(usage, "cache_creation_input_tokens", 0) or 0),
+        )
 
     @staticmethod
     def _text_of(message: Any) -> str:
@@ -167,19 +202,11 @@ class AnthropicBackend:
             block.text for block in message.content if getattr(block, "type", "") == "text"
         ).strip()
 
-    def _to_completion(self, message: Any, data: dict | None) -> Completion:
-        usage = message.usage
+    def _to_completion(self, message: Any, usage: Usage, data: dict | None) -> Completion:
         return Completion(
             text=self._text_of(message),
             data=data,
-            usage=Usage(
-                input_tokens=int(usage.input_tokens or 0),
-                output_tokens=int(usage.output_tokens or 0),
-                cache_read_tokens=int(getattr(usage, "cache_read_input_tokens", 0) or 0),
-                cache_write_tokens=int(
-                    getattr(usage, "cache_creation_input_tokens", 0) or 0
-                ),
-            ),
+            usage=usage,
             backend=self.name,
             model=self.model,
         )
