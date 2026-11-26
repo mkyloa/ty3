@@ -39,7 +39,7 @@ class ClaudeCliBackend:
 
     def __init__(
         self,
-        model: str = "claude-opus-5",
+        model: str = "claude-opus-5-5",
         executable: str = "claude",
         timeout_s: int = 900,
         search_budget_usd: float = 1.5,

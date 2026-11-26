@@ -24,7 +24,7 @@ def build_backend(name: str, model: str | None = None, **kwargs) -> Backend:
     if name == "claude-cli":
         from .claude_cli import ClaudeCliBackend
 
-        return ClaudeCliBackend(model=model or "claude-opus-5", **kwargs)
+        return ClaudeCliBackend(model=model or "claude-opus-5-5", **kwargs)
     if name == "gemini":
         from .gemini import GeminiBackend
 
@@ -32,7 +32,7 @@ def build_backend(name: str, model: str | None = None, **kwargs) -> Backend:
     if name == "anthropic":
         from .anthropic_api import AnthropicBackend
 
-        return AnthropicBackend(model=model or "claude-opus-5", **kwargs)
+        return AnthropicBackend(model=model or "claude-opus-5-5", **kwargs)
     raise ValueError(
         f"невідомий бекенд {name!r}; доступні: {', '.join(available_backends)}"
     )

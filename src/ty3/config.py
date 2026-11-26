@@ -11,7 +11,7 @@ from typing import Any
 @dataclass(frozen=True)
 class ModelConfig:
     backend: str = "claude-cli"
-    name: str = "claude-opus-5"
+    name: str = "claude-opus-5-5"
     effort: str = "high"
     effort_light: str = "medium"
     max_tokens: int = 32000
